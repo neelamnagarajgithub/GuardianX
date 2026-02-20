@@ -1,0 +1,35 @@
+# ============================================================
+# DOCKERFILE FOR MODEL TRAINING SERVICE
+# ============================================================
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies including CUDA support for GPU training
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install additional ML packages
+RUN pip install --no-cache-dir \
+    scikit-learn==1.3.0 \
+    lightgbm==4.0.0 \
+    networkx==3.1 \
+    optuna==3.3.0
+
+# Copy training scripts
+COPY train_network.py .
+COPY download_and_save.py .
+
+# Create directories
+RUN mkdir -p /app/artifacts /app/training_data
+
+# Default command (can be overridden)
+CMD ["python", "train_network.py"]

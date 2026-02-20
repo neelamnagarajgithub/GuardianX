@@ -1,0 +1,278 @@
+# ============================================================
+# DOCKER COMPOSE FOR TRAVEL PLATFORM NETWORK INTELLIGENCE
+# Complete development and production environment setup
+# ============================================================
+
+version: '3.8'
+
+services:
+  # ============================================================
+  # DATABASE SERVICES
+  # ============================================================
+  
+  postgres:
+    image: postgres:15-alpine
+    container_name: travel-postgres
+    environment:
+      POSTGRES_DB: travel_platform
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres123
+      POSTGRES_INITDB_ARGS: --encoding=UTF-8
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database_schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - travel-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  redis:
+    image: redis:7-alpine
+    container_name: travel-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - travel-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================================
+  # MESSAGE QUEUE AND SEARCH
+  # ============================================================
+  
+  zookeeper:
+    image: confluentinc/cp-zookeeper:latest
+    container_name: travel-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - travel-network
+
+  kafka:
+    image: confluentinc/cp-kafka:latest
+    container_name: travel-kafka
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+    ports:
+      - "9092:9092"
+    networks:
+      - travel-network
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: travel-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+    networks:
+      - travel-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.11.0
+    container_name: travel-kibana
+    depends_on:
+      - elasticsearch
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    networks:
+      - travel-network
+
+  # ============================================================
+  # APPLICATION SERVICES
+  # ============================================================
+  
+  travel-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: travel-api
+    depends_on:
+      - postgres
+      - redis
+      - kafka
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DB=travel_platform
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres123
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - KAFKA_BROKERS=kafka:9092
+      - MODEL_PATH=/app/artifacts/models
+    volumes:
+      - ./artifacts:/app/artifacts
+      - ./logs:/app/logs
+    ports:
+      - "8000:8000"
+    networks:
+      - travel-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  log-processor:
+    build:
+      context: .
+      dockerfile: Dockerfile.processor
+    container_name: travel-log-processor
+    depends_on:
+      - postgres
+      - redis
+      - kafka
+      - elasticsearch
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DB=travel_platform
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres123
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - KAFKA_BROKERS=kafka:9092
+      - ELASTICSEARCH_HOST=elasticsearch
+      - ELASTICSEARCH_PORT=9200
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - travel-network
+    restart: unless-stopped
+
+  # ============================================================
+  # MONITORING SERVICES
+  # ============================================================
+  
+  grafana:
+    image: grafana/grafana:latest
+    container_name: travel-grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin123
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources
+    ports:
+      - "3000:3000"
+    networks:
+      - travel-network
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: travel-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    volumes:
+      - prometheus_data:/prometheus
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    networks:
+      - travel-network
+
+  # ============================================================
+  # TRAINING SERVICE (for model retraining)
+  # ============================================================
+  
+  model-trainer:
+    build:
+      context: .
+      dockerfile: Dockerfile.trainer
+    container_name: travel-model-trainer
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DB=travel_platform
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres123
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - OUTPUT_DIR=/app/artifacts
+    volumes:
+      - ./artifacts:/app/artifacts
+      - ./training_data:/app/training_data
+    networks:
+      - travel-network
+    profiles:
+      - training
+
+  # ============================================================
+  # JUPYTER NOTEBOOK (for development/analysis)
+  # ============================================================
+  
+  jupyter:
+    build:
+      context: .
+      dockerfile: Dockerfile.jupyter
+    container_name: travel-jupyter
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      - JUPYTER_ENABLE_LAB=yes
+      - JUPYTER_TOKEN=travel123
+    volumes:
+      - ./notebooks:/home/jovyan/work
+      - ./artifacts:/home/jovyan/artifacts
+    ports:
+      - "8888:8888"
+    networks:
+      - travel-network
+    profiles:
+      - development
+
+# ============================================================
+# NETWORKS AND VOLUMES
+# ============================================================
+
+networks:
+  travel-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  elasticsearch_data:
+    driver: local
+  grafana_data:
+    driver: local
+  prometheus_data:
+    driver: local
