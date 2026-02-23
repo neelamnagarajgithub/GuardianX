@@ -37,7 +37,7 @@ from sklearn.calibration import CalibratedClassifierCV
 # -----------------------------
 # PRODUCTION CONFIG
 # -----------------------------
-ARTIFACT_DIR = Path(os.getenv("ARTIFACT_DIR", "/kaggle/working/artifacts"))
+ARTIFACT_DIR = Path(os.getenv("ARTIFACT_DIR", "artifacts"))
 RAW = ARTIFACT_DIR / "raw"
 MODEL_DIR = ARTIFACT_DIR / "models"
 FEATURE_DIR = ARTIFACT_DIR / "features"
@@ -348,7 +348,15 @@ class NetworkThreatDetectionModel:
             n_jobs=-1
         )
 
-        base_model.fit(X_train_s, y_train, eval_set=[(X_val_s, y_val)], eval_metric='auc', verbose=False)
+        from lightgbm import log_evaluation
+
+        base_model.fit(
+            X_train_s,
+            y_train,
+            eval_set=[(X_val_s, y_val)],
+            eval_metric='auc',
+            callbacks=[log_evaluation(period=0)]  # disables logging cleanly
+        )
 
         # calibrate probability estimates
         self.calibrator = CalibratedClassifierCV(base_model, method='isotonic', cv=3)
