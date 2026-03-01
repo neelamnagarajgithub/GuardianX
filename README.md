@@ -1,9 +1,9 @@
-# Phoenix — B2B Travel Platform Fraud Detection System
+# Team Phoenix - GuardianX - — B2B Travel Platform Fraud Detection System
 ## Complete Technical Documentation
 
-> **Hackathon:** VoyageHack 2.0 | **Track:** B2B Travel Platform Fraud & Credit Risk
-> **Document Version:** 2.0 | **Last Updated:** February 23, 2026 | **Status:** Production Ready 
-
+- **Hackathon:** VoyageHack 2.0 | **Track:** B2B Travel Platform Fraud & Credit Risk
+- **Document Version:** 2.0 | **Last Updated:** March 1st, 2026 | **Status:** Production Ready 
+-  Artifacts are Uploaded Seperately in additional Documents
 ---
 
 ## Table of Contents
@@ -29,7 +29,7 @@
 
 ## 1. System Overview
 
-Phoenix is a multi-layer, ML-powered fraud detection and credit risk management system purpose-built for B2B travel platforms. It combines four specialist machine learning models with a real-time Central Intelligence Engine, travel-specific business logic, and an agentic credit manager that autonomously expands, contracts, or pauses credit limits based on trust score evolution.
+GuardianX is a multi-layer, ML-powered fraud detection and credit risk management system purpose-built for B2B travel platforms. It combines four specialist machine learning models with a real-time Central Intelligence Engine, travel-specific business logic, and an agentic credit manager that autonomously expands, contracts, or pauses credit limits based on trust score evolution.
 
 ### High-Level Data Flow
 
@@ -98,7 +98,7 @@ Incoming Transaction / Booking Request
 ### File Structure
 
 ```
-NetworkAnamolyIntligence/
+GuardianX/
 ├── advnetworkmodel.py               # Model 1 — Network Intelligence (training)
 ├── behavioral_fraud_detection.py    # Model 2 — Behavioral Fraud Detection (training)
 ├── financial_fraud_detection.py     # Model 3 — Financial Credit Risk (training)
@@ -990,7 +990,7 @@ services:
       - "8000:8000"
     environment:
       - ARTIFACT_DIR=/app/artifacts
-      - DATABASE_URL=postgresql://postgres:password@postgres:5432/phoenix
+      - DATABASE_URL=postgresql://postgres:password@postgres:5432/GuardianX
       - REDIS_URL=redis://redis:6379
     depends_on: [postgres, redis]
     volumes:
@@ -1008,7 +1008,7 @@ services:
   postgres:
     image: postgres:15
     environment:
-      POSTGRES_DB: phoenix
+      POSTGRES_DB: GuardianX
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: password
     volumes:
@@ -1052,7 +1052,7 @@ docker-compose up --build
 
 ```bash
 ARTIFACT_DIR=/app/artifacts
-DATABASE_URL=postgresql://postgres:password@localhost:5432/phoenix
+DATABASE_URL=postgresql://postgres:password@localhost:5432/GuardianX
 REDIS_URL=redis://localhost:6379
 RANDOM_STATE=42
 LOG_LEVEL=INFO
@@ -1180,7 +1180,7 @@ Results saved to: artifacts/evaluation_results.json
 
 ## 16. Problem Statement Mapping
 
-| VoyageHack 2.0 Requirement | Phoenix Implementation |
+| VoyageHack 2.0 Requirement | GuardianX Implementation |
 |---|---|
 | Detect fraudulent bookings in real time | Central Intelligence Engine — every transaction scored in < 100 ms |
 | Prevent chargeback fraud | Financial Credit Risk model — balance inconsistency, account drainage |
@@ -1206,6 +1206,6 @@ Results saved to: artifacts/evaluation_results.json
 
 ---
 
-**Document:** Phoenix B2B Travel Fraud Detection — Technical Reference
+**Document:** GuardianX B2B Travel Fraud Detection — Technical Reference
 **Contact:** Network Intelligence Team
 **Hackathon:** VoyageHack 2.0
