@@ -44,6 +44,15 @@ FEATURE_DIR = ARTIFACT_DIR / "features"
 
 RANDOM_STATE = int(os.getenv("RANDOM_STATE", 42))
 
+# Canonical NSI feature columns — must match between training and inference
+NSI_FEATURE_COLS = [
+    'ip_address', 'total_requests', 'nginx_request_count', 'api_call_count', 'redis_ops',
+    'unique_endpoints', 'unique_user_agents', 'unique_sessions', 'error_rate', 'auth_failure_rate',
+    'avg_request_time', 'request_time_std', 'is_private_ip', 'is_suspicious_ip', 'has_bot_user_agent',
+    'user_agent_entropy', 'vpn_probability', 'proxy_probability', 'requests_per_minute', 'burst_behavior_score',
+    'session_switching_rate', 'session_hijacking_score',
+]
+
 RAW.mkdir(parents=True, exist_ok=True)
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
 FEATURE_DIR.mkdir(parents=True, exist_ok=True)
@@ -251,7 +260,7 @@ class NSIDatasetBuilder:
                 logger.warning(f"Failed to load PaySim: {e}")
 
         # Nigerian
-        nig_path = self.raw_dir / "nigerian.parquet"
+        nig_path = self.raw_dir / "nigerian_sample.parquet"
         if nig_path.exists():
             try:
                 df = pd.read_parquet(nig_path)
@@ -280,33 +289,160 @@ class NSIDatasetBuilder:
     # -------------------------
 
     def _convert_paysim(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Map PaySim transaction data to NSI feature space with synthetic network behaviour."""
         df = df.copy()
-        # pay attention to typical PaySim columns: 'step','type','amount','oldbalanceOrg','newbalanceOrig','isFraud'
+        n = len(df)
+        rng = np.random.RandomState(RANDOM_STATE)
         if 'isFraud' not in df.columns:
             df['isFraud'] = 0
-        # deterministic IP mapping for reproducibility
-        df['ip_address'] = (df['step'].fillna(0).astype(int) % 255).astype(str) + "." + (df['amount'].fillna(0).astype(int) % 255).astype(str) + ".1.1"
         df['label'] = df['isFraud'].astype(int)
-        return df[['ip_address', 'amount', 'oldbalanceOrg']].assign(label=df['label'])
+        df['ip_address'] = (
+            (df['step'].fillna(0).astype(int) % 255).astype(str) + "." +
+            (df['amount'].fillna(0).astype(int) % 255).astype(str) + ".1.1"
+        )
+        amount = df['amount'].fillna(0).clip(0, 1e7).values
+        df['total_requests'] = np.clip(rng.poisson(20, n) + (amount / 10000).astype(int), 1, 1000)
+        df['nginx_request_count'] = (df['total_requests'] * 0.6).astype(int)
+        df['api_call_count'] = (df['total_requests'] * 0.4).astype(int)
+        df['redis_ops'] = rng.poisson(2, n)
+        df['unique_endpoints'] = np.clip(rng.poisson(4, n), 1, 100)
+        df['unique_user_agents'] = np.clip(rng.poisson(2, n), 1, 20)
+        df['unique_sessions'] = np.clip(rng.poisson(3, n), 1, 50)
+        df['error_rate'] = rng.beta(2, 10, n)
+        df['auth_failure_rate'] = rng.beta(1, 20, n)
+        df['avg_request_time'] = rng.exponential(scale=0.1, size=n)
+        df['request_time_std'] = rng.exponential(scale=0.02, size=n)
+        df['is_private_ip'] = df['ip_address'].apply(
+            lambda x: 1 if str(x).startswith('10.') or str(x).startswith('192.168') else 0
+        )
+        df['is_suspicious_ip'] = df['ip_address'].apply(
+            lambda x: 1 if str(x).startswith('1.2') else 0
+        )
+        df['has_bot_user_agent'] = rng.binomial(1, 0.05, n)
+        df['user_agent_entropy'] = rng.uniform(0, 3, n)
+        df['vpn_probability'] = rng.uniform(0, 0.2, n)
+        df['proxy_probability'] = rng.uniform(0, 0.2, n)
+        df['requests_per_minute'] = df['total_requests'] / np.maximum(rng.uniform(10, 60, n), 1)
+        df['burst_behavior_score'] = rng.uniform(0, 1, n)
+        df['session_switching_rate'] = df['unique_sessions'] / 10.0
+        df['session_hijacking_score'] = (
+            rng.uniform(0, 1, n) * (df['session_switching_rate'].values > 0.3).astype(float)
+        )
+        return df[NSI_FEATURE_COLS + ['label']]
 
     def _convert_nigerian(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Map the 45 Nigerian dataset columns to NSI feature space.
+
+        Semantic mappings:
+          ip_sharing      → vpn_probability / proxy_probability
+          geo_anomaly     → session_hijacking_score
+          velocity_score  → burst_behavior_score / unique_endpoints
+          txn_frequency   → total_requests / requests_per_minute
+          spending_dev    → error_rate / user_agent_entropy
+        """
         df = df.copy()
-        # common columns might vary; try to find a fraud label
+        # --- label ---
         if 'is_fraud' in df.columns:
             df['label'] = df['is_fraud'].astype(int)
         elif 'fraud_flag' in df.columns:
             df['label'] = df['fraud_flag'].astype(int)
         else:
             df['label'] = 0
-        df['ip_address'] = (df.index % 255).astype(str) + ".10.10.10"
-        return df[['ip_address']].assign(label=df['label'])
+
+        # --- IP: use real Nigerian IPs ---
+        df['ip_address'] = (
+            df['ip_address'].fillna((df.index % 255).astype(str) + '.10.10.10').astype(str)
+        )
+
+        # --- volume: transaction frequency → request volume ---
+        df['total_requests'] = df['txn_count_last_24h'].fillna(5).clip(1, 1000).astype(int)
+        df['nginx_request_count'] = (df['total_requests'] * 0.6).astype(int)
+        df['api_call_count'] = df['txn_count_last_1h'].fillna(1).clip(0, 100).astype(int)
+        df['redis_ops'] = 2
+
+        # --- diversity: velocity / device sharing → endpoint / agent diversity ---
+        df['unique_endpoints'] = df['velocity_score'].fillna(3).clip(1, 100).astype(int)
+        df['unique_user_agents'] = (df['is_device_shared'].fillna(0) * 3 + 1).astype(int)
+        df['unique_sessions'] = df['device_seen_count'].fillna(5).clip(1, 50).astype(int)
+
+        # --- error behaviour: spending deviation → error signals ---
+        dev = df['spending_deviation_score'].fillna(1.0)
+        df['error_rate'] = (dev / 10.0).clip(0, 1)
+        df['auth_failure_rate'] = (dev / 20.0).clip(0, 1)
+
+        # --- latency: inter-transaction time → request timing ---
+        df['avg_request_time'] = (
+            df['time_since_last_transaction'].fillna(100).clip(0, 1e6) / 1000.0
+        )
+        df['request_time_std'] = (
+            df['avg_gap_between_txns'].fillna(50).clip(0, 1e6) / 1000.0
+        )
+
+        # --- intelligence: IP sharing → suspicious signal ---
+        df['is_private_ip'] = df['ip_address'].apply(
+            lambda x: 1 if str(x).startswith('10.') or str(x).startswith('192.168.') else 0
+        )
+        df['is_suspicious_ip'] = df['is_ip_shared'].fillna(0).astype(int)
+
+        # --- automation (no direct signal in Nigerian data) ---
+        df['has_bot_user_agent'] = 0
+        df['user_agent_entropy'] = (dev / 3.0).clip(0, 3)
+
+        # --- infra masking: IP / device sharing → VPN / proxy ---
+        df['vpn_probability'] = (df['is_ip_shared'].fillna(0) * 0.7).clip(0, 1)
+        df['proxy_probability'] = (df['is_device_shared'].fillna(0) * 0.5).clip(0, 1)
+
+        # --- velocity: txn burst → request rate / burst score ---
+        df['requests_per_minute'] = (df['txn_count_last_1h'].fillna(1) / 60.0).clip(0, 100)
+        df['burst_behavior_score'] = (df['velocity_score'].fillna(3).clip(0, 10) / 10.0)
+
+        # --- session abuse: geo anomaly → session hijacking signals ---
+        df['session_switching_rate'] = (
+            df['geospatial_velocity_anomaly'].fillna(False).astype(float) * 0.8
+        )
+        df['session_hijacking_score'] = (
+            df['geo_anomaly_score'].fillna(0).clip(0, 10) / 10.0
+        )
+
+        return df[NSI_FEATURE_COLS + ['label']]
 
     def _convert_generic_cifer(self, df: pd.DataFrame) -> pd.DataFrame:
+        """CIFER has a PaySim-like schema. Fix: use isFraud label; output full NSI features."""
         df = df.copy()
-        # generic mapping
-        df['label'] = 0
-        df['ip_address'] = (df.index % 255).astype(str) + ".20.20.20"
-        return df[['ip_address']].assign(label=df['label'])
+        n = len(df)
+        rng = np.random.RandomState(RANDOM_STATE + 1)  # distinct seed from PaySim
+        # Fix: was hardcoded 0 — CIFER actually contains isFraud
+        df['label'] = df['isFraud'].astype(int) if 'isFraud' in df.columns else 0
+        df['ip_address'] = (
+            (df['step'].fillna(0).astype(int) % 255).astype(str) + "." +
+            (df['amount'].fillna(0).astype(int) % 255).astype(str) + ".20.20"
+        )
+        df['total_requests'] = np.clip(rng.poisson(15, n), 1, 1000)
+        df['nginx_request_count'] = (df['total_requests'] * 0.6).astype(int)
+        df['api_call_count'] = (df['total_requests'] * 0.4).astype(int)
+        df['redis_ops'] = rng.poisson(2, n)
+        df['unique_endpoints'] = np.clip(rng.poisson(4, n), 1, 100)
+        df['unique_user_agents'] = np.clip(rng.poisson(2, n), 1, 20)
+        df['unique_sessions'] = np.clip(rng.poisson(3, n), 1, 50)
+        df['error_rate'] = rng.beta(2, 10, n)
+        df['auth_failure_rate'] = rng.beta(1, 20, n)
+        df['avg_request_time'] = rng.exponential(scale=0.1, size=n)
+        df['request_time_std'] = rng.exponential(scale=0.02, size=n)
+        df['is_private_ip'] = df['ip_address'].apply(
+            lambda x: 1 if str(x).startswith('10.') or str(x).startswith('192.168') else 0
+        )
+        df['is_suspicious_ip'] = 0
+        df['has_bot_user_agent'] = rng.binomial(1, 0.03, n)
+        df['user_agent_entropy'] = rng.uniform(0, 3, n)
+        df['vpn_probability'] = rng.uniform(0, 0.15, n)
+        df['proxy_probability'] = rng.uniform(0, 0.15, n)
+        df['requests_per_minute'] = df['total_requests'] / np.maximum(rng.uniform(10, 60, n), 1)
+        df['burst_behavior_score'] = rng.uniform(0, 0.5, n)
+        df['session_switching_rate'] = df['unique_sessions'] / 10.0
+        df['session_hijacking_score'] = (
+            rng.uniform(0, 0.5, n) * (df['session_switching_rate'].values > 0.3).astype(float)
+        )
+        return df[NSI_FEATURE_COLS + ['label']]
 
 # -----------------------------
 # Model class
@@ -500,16 +636,21 @@ def train_nsi_from_datasets(raw_dir: Path = RAW, model_dir: Path = MODEL_DIR):
     builder = NSIDatasetBuilder(raw_dir)
     df = builder.load_training_frame()
 
-    # ensure label column exists
+    # Converters now return the full NSI feature set — no synthetic generation / merge needed
     if 'label' not in df.columns:
         df['label'] = 0
 
-    # build synthetic network features (replace with real logs later)
-    feature_df = build_synthetic_features(df[['ip_address']])
+    # Defensive: fill any column that a converter might have missed
+    for col in NSI_FEATURE_COLS:
+        if col not in df.columns:
+            df[col] = 0
 
-    # merge label
-    feature_df = feature_df.merge(df[['ip_address', 'label']].drop_duplicates('ip_address'), on='ip_address', how='left')
+    feature_df = df[NSI_FEATURE_COLS + ['label']].copy()
     feature_df['label'] = feature_df['label'].fillna(0).astype(int)
+
+    pos = int(feature_df['label'].sum())
+    neg = len(feature_df) - pos
+    logger.info(f"Label distribution: {pos:,} positives / {neg:,} negatives ({pos / len(feature_df) * 100:.2f}% fraud)")
 
     # save features snapshot
     feature_snapshot = FEATURE_DIR / 'training_features.parquet'

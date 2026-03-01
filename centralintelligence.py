@@ -6,11 +6,27 @@
 import numpy as np
 import pandas as pd
 import json
+import sys
 import ipaddress
 from datetime import datetime, timedelta
 from pathlib import Path
 import warnings
 warnings.filterwarnings('ignore')
+
+# ============================================================
+# IMPORT REAL NSI MODEL — fixes NameError
+# ============================================================
+try:
+    from network_security_intelligence import (
+        NetworkThreatDetectionModel,
+        NetworkSecurityIntelligence,
+    )
+    NSI_AVAILABLE = True
+    print("✅ NSI module imported successfully")
+except ImportError as e:
+    NSI_AVAILABLE = False
+    print(f"⚠️  NSI module import failed: {e}")
+    print("   Run: python network_security_intelligence.py train")
 
 class DynamicCreditManager:
     """Agentic workflow to dynamically manage B2B credit exposure based on evolving trust"""
@@ -102,10 +118,18 @@ class RealNSIAdapter:
     """
 
     def __init__(self):
-        self.model = NetworkThreatDetectionModel()
-        self.feature_extractor = NetworkSecurityIntelligence()
         self.is_loaded = False
-        self._load_model()
+
+        if not NSI_AVAILABLE:
+            print("⚠️  NSI module not available. Using fallback rules.")
+            return
+
+        try:
+            self.model             = NetworkThreatDetectionModel()
+            self.feature_extractor = NetworkSecurityIntelligence()
+            self._load_model()
+        except Exception as e:
+            print(f"⚠️  NSI adapter init error: {e}")
 
     def _load_model(self):
         """Load the trained NSI model from artifacts"""
@@ -116,8 +140,9 @@ class RealNSIAdapter:
             self.is_loaded = True
             print("✅ Real NSI model loaded from artifacts/models/network_threat_model.joblib")
         else:
-            print("⚠️  NSI model not found. Run: python network_security_intelligence.py train")
             self.is_loaded = False
+            print("⚠️  NSI model artifact not found.")
+            print("   Train it now: python network_security_intelligence.py train")
 
     def analyze_network_security(self, transaction_data: dict) -> dict:
         """
@@ -130,69 +155,95 @@ class RealNSIAdapter:
 
         ip_address = transaction_data.get('ip_address', '0.0.0.0')
 
-        # --- Build the feature row the NSI model expects ---
+        # Build rule-based threat score from signals
+        # This runs REGARDLESS of whether ML model is loaded
+        rule_score = 0.0
+        vpn_prob = self._estimate_vpn_probability(ip_address, transaction_data)
+
+        if vpn_prob > 0.5:
+            rule_score += 0.35          # VPN/Tor detected
+        if transaction_data.get('geo_velocity_anomaly', False):
+            rule_score += 0.30          # Impossible travel
+        if transaction_data.get('burst_detected', False) and \
+           transaction_data.get('velocity_score', 0) > 7:
+            rule_score += 0.25          # Botnet/automation
+        if transaction_data.get('is_device_shared', False):
+            rule_score += 0.15          # Device farm
+        if transaction_data.get('session_hijacking_score', 0) > 0.5:
+            rule_score += 0.20          # Session abuse
+
+        rule_score = min(1.0, rule_score)
+
+        # Build feature row for ML model
         raw_row = pd.DataFrame([{
-            'ip_address':           ip_address,
-            'total_requests':       transaction_data.get('total_requests', 20),
-            'nginx_request_count':  transaction_data.get('nginx_request_count', 12),
-            'api_call_count':       transaction_data.get('api_call_count', 8),
-            'redis_ops':            transaction_data.get('redis_ops', 2),
-            'unique_endpoints':     transaction_data.get('unique_endpoints', 4),
-            'unique_user_agents':   transaction_data.get('unique_user_agents', 1),
-            'unique_sessions':      transaction_data.get('unique_sessions', 1),
-            'error_rate':           transaction_data.get('error_rate', 0.05),
-            'auth_failure_rate':    transaction_data.get('auth_failure_rate', 0.0),
-            'avg_request_time':     transaction_data.get('avg_request_time', 0.1),
-            'request_time_std':     transaction_data.get('request_time_std', 0.02),
-
-            # IP intelligence (derived from ip_address)
-            'is_private_ip':        1 if self._is_private(ip_address) else 0,
-            'is_suspicious_ip':     1 if self._is_suspicious(ip_address) else 0,
-
-            # Automation signals (from transaction context)
-            'has_bot_user_agent':   1 if transaction_data.get('burst_detected', False) else 0,
-            'user_agent_entropy':   transaction_data.get('user_agent_entropy', 1.5),
-
-            # Masking signals
-            'vpn_probability':      self._estimate_vpn_probability(ip_address, transaction_data),
-            'proxy_probability':    transaction_data.get('proxy_probability', 0.0),
-
-            # Velocity
-            'requests_per_minute':  transaction_data.get('velocity_score', 1.0),
-            'burst_behavior_score': 1.0 if transaction_data.get('burst_detected', False) else 0.0,
-
-            # Session abuse
+            'ip_address':              ip_address,
+            'total_requests':          transaction_data.get('total_requests', 20),
+            'nginx_request_count':     transaction_data.get('nginx_request_count', 12),
+            'api_call_count':          transaction_data.get('api_call_count', 8),
+            'redis_ops':               transaction_data.get('redis_ops', 2),
+            'unique_endpoints':        transaction_data.get('unique_endpoints', 4),
+            'unique_user_agents':      transaction_data.get('unique_user_agents', 1),
+            'unique_sessions':         transaction_data.get('unique_sessions', 1),
+            'error_rate':              transaction_data.get('error_rate', 0.05),
+            'auth_failure_rate':       transaction_data.get('auth_failure_rate', 0.0),
+            'avg_request_time':        transaction_data.get('avg_request_time', 0.1),
+            'request_time_std':        transaction_data.get('request_time_std', 0.02),
+            'is_private_ip':           1 if self._is_private(ip_address) else 0,
+            'is_suspicious_ip':        1 if self._is_suspicious(ip_address) else 0,
+            'has_bot_user_agent':      1 if transaction_data.get('burst_detected', False) else 0,
+            'user_agent_entropy':      transaction_data.get('user_agent_entropy', 1.5),
+            'vpn_probability':         vpn_prob,
+            'proxy_probability':       transaction_data.get('proxy_probability', 0.0),
+            'requests_per_minute':     transaction_data.get('velocity_score', 1.0),
+            'burst_behavior_score':    1.0 if transaction_data.get('burst_detected', False) else 0.0,
             'session_switching_rate':  transaction_data.get('session_switching_rate', 0.1),
             'session_hijacking_score': transaction_data.get('session_hijacking_score', 0.0),
         }])
 
-        # --- Run real ML model if loaded, else graceful fallback ---
+        # Get ML score if model loaded
+        ml_score = 0.0
         if self.is_loaded:
             try:
-                results = self.model.predict_threat(raw_row)
-                result  = results[0]
-
-                threat_prob   = result['threat_probability']
-                risk_level    = result['risk_level']
-                action        = result['recommended_action']
-
-                # Map to attack vectors for explainability
-                attack_vectors = self._explain_threats(transaction_data, threat_prob)
-
-                return {
-                    'network_threat_score': threat_prob,
-                    'threat_level':         risk_level,
-                    'attack_vectors':       attack_vectors,
-                    'recommended_action':   action,
-                    'model_type':           'REAL_ML_NSI_LGBM',
-                    'ip_address':           ip_address
-                }
-
+                results   = self.model.predict_threat(raw_row)
+                ml_score  = results[0]['threat_probability']
             except Exception as e:
-                print(f"⚠️  NSI inference error: {e}. Using fallback.")
-                return self._fallback_analysis(transaction_data)
+                print(f"⚠️  NSI ML inference error: {e}")
+                ml_score = rule_score   # fall back to rule score
+
+        # ✅ FIX: Combine ML score + rule score (max of both)
+        # This ensures VPN/bot detections ALWAYS raise the threat score
+        final_threat_score = max(ml_score, rule_score)
+
+        # ✅ FIX: Generate vectors from the SAME signals used for scoring
+        attack_vectors = self._explain_threats(transaction_data, final_threat_score)
+
+        # Risk level from final combined score
+        if final_threat_score >= 0.7:
+            risk_level = 'CRITICAL'
+            action     = 'BLOCK_IMMEDIATELY'
+        elif final_threat_score >= 0.5:
+            risk_level = 'HIGH'
+            action     = 'RATE_LIMIT'
+        elif final_threat_score >= 0.3:
+            risk_level = 'MEDIUM'
+            action     = 'ENHANCED_MONITORING'
+        elif final_threat_score >= 0.1:
+            risk_level = 'LOW'
+            action     = 'LOG_AND_MONITOR'
         else:
-            return self._fallback_analysis(transaction_data)
+            risk_level = 'MINIMAL'
+            action     = 'ALLOW'
+
+        return {
+            'network_threat_score': final_threat_score,
+            'ml_score':             ml_score,
+            'rule_score':           rule_score,
+            'threat_level':         risk_level,
+            'attack_vectors':       attack_vectors,
+            'recommended_action':   action,
+            'model_type':           'HYBRID_ML_RULES',
+            'ip_address':           ip_address
+        }
 
     def _estimate_vpn_probability(self, ip: str, data: dict) -> float:
         """Estimate VPN probability from available signals"""
@@ -218,7 +269,7 @@ class RealNSIAdapter:
         return ip.startswith(suspicious_prefixes)
 
     def _explain_threats(self, data: dict, threat_prob: float) -> list:
-        """Generate human-readable threat explanations from signals"""
+        """Generate human-readable threat explanations — CONNECTED to ML score"""
         vectors = []
 
         ip = data.get('ip_address', '')
@@ -241,15 +292,99 @@ class RealNSIAdapter:
 
         return vectors
 
-    def _fallback_analysis(self, transaction_data: dict) -> dict:
-        """Graceful fallback if model is not loaded"""
+    def analyze_network_security(self, transaction_data: dict) -> dict:
+        """Real NSI analysis — ML score + rule vectors CONNECTED"""
+
+        ip_address = transaction_data.get('ip_address', '0.0.0.0')
+
+        # Build rule-based threat score from signals
+        # This runs REGARDLESS of whether ML model is loaded
+        rule_score = 0.0
+        vpn_prob = self._estimate_vpn_probability(ip_address, transaction_data)
+
+        if vpn_prob > 0.5:
+            rule_score += 0.35          # VPN/Tor detected
+        if transaction_data.get('geo_velocity_anomaly', False):
+            rule_score += 0.30          # Impossible travel
+        if transaction_data.get('burst_detected', False) and \
+           transaction_data.get('velocity_score', 0) > 7:
+            rule_score += 0.25          # Botnet/automation
+        if transaction_data.get('is_device_shared', False):
+            rule_score += 0.15          # Device farm
+        if transaction_data.get('session_hijacking_score', 0) > 0.5:
+            rule_score += 0.20          # Session abuse
+
+        rule_score = min(1.0, rule_score)
+
+        # Build feature row for ML model
+        raw_row = pd.DataFrame([{
+            'ip_address':              ip_address,
+            'total_requests':          transaction_data.get('total_requests', 20),
+            'nginx_request_count':     transaction_data.get('nginx_request_count', 12),
+            'api_call_count':          transaction_data.get('api_call_count', 8),
+            'redis_ops':               transaction_data.get('redis_ops', 2),
+            'unique_endpoints':        transaction_data.get('unique_endpoints', 4),
+            'unique_user_agents':      transaction_data.get('unique_user_agents', 1),
+            'unique_sessions':         transaction_data.get('unique_sessions', 1),
+            'error_rate':              transaction_data.get('error_rate', 0.05),
+            'auth_failure_rate':       transaction_data.get('auth_failure_rate', 0.0),
+            'avg_request_time':        transaction_data.get('avg_request_time', 0.1),
+            'request_time_std':        transaction_data.get('request_time_std', 0.02),
+            'is_private_ip':           1 if self._is_private(ip_address) else 0,
+            'is_suspicious_ip':        1 if self._is_suspicious(ip_address) else 0,
+            'has_bot_user_agent':      1 if transaction_data.get('burst_detected', False) else 0,
+            'user_agent_entropy':      transaction_data.get('user_agent_entropy', 1.5),
+            'vpn_probability':         vpn_prob,
+            'proxy_probability':       transaction_data.get('proxy_probability', 0.0),
+            'requests_per_minute':     transaction_data.get('velocity_score', 1.0),
+            'burst_behavior_score':    1.0 if transaction_data.get('burst_detected', False) else 0.0,
+            'session_switching_rate':  transaction_data.get('session_switching_rate', 0.1),
+            'session_hijacking_score': transaction_data.get('session_hijacking_score', 0.0),
+        }])
+
+        # Get ML score if model loaded
+        ml_score = 0.0
+        if self.is_loaded:
+            try:
+                results   = self.model.predict_threat(raw_row)
+                ml_score  = results[0]['threat_probability']
+            except Exception as e:
+                print(f"⚠️  NSI ML inference error: {e}")
+                ml_score = rule_score   # fall back to rule score
+
+        # ✅ FIX: Combine ML score + rule score (max of both)
+        # This ensures VPN/bot detections ALWAYS raise the threat score
+        final_threat_score = max(ml_score, rule_score)
+
+        # ✅ FIX: Generate vectors from the SAME signals used for scoring
+        attack_vectors = self._explain_threats(transaction_data, final_threat_score)
+
+        # Risk level from final combined score
+        if final_threat_score >= 0.7:
+            risk_level = 'CRITICAL'
+            action     = 'BLOCK_IMMEDIATELY'
+        elif final_threat_score >= 0.5:
+            risk_level = 'HIGH'
+            action     = 'RATE_LIMIT'
+        elif final_threat_score >= 0.3:
+            risk_level = 'MEDIUM'
+            action     = 'ENHANCED_MONITORING'
+        elif final_threat_score >= 0.1:
+            risk_level = 'LOW'
+            action     = 'LOG_AND_MONITOR'
+        else:
+            risk_level = 'MINIMAL'
+            action     = 'ALLOW'
+
         return {
-            'network_threat_score': 0.1,
-            'threat_level':         'LOW',
-            'attack_vectors':       ['model_unavailable_fallback'],
-            'recommended_action':   'LOG_AND_MONITOR',
-            'model_type':           'FALLBACK_RULES',
-            'ip_address':           transaction_data.get('ip_address', '0.0.0.0')
+            'network_threat_score': final_threat_score,
+            'ml_score':             ml_score,
+            'rule_score':           rule_score,
+            'threat_level':         risk_level,
+            'attack_vectors':       attack_vectors,
+            'recommended_action':   action,
+            'model_type':           'HYBRID_ML_RULES',
+            'ip_address':           ip_address
         }
 
 
@@ -373,64 +508,84 @@ class TravelAgencyFraudDetectionSystem:
         return final_assessment
     
     def run_base_fraud_detection(self, transaction_data):
-        """Run base fraud detection models with travel calibration"""
-        
+        """Run base fraud detection models with CONTEXT-AWARE travel calibration"""
+
         results = {}
-        
-        # Network Intelligence (with travel calibration)
+
+        # ✅ FIX: Context-aware calibration — calibrate DIFFERENTLY
+        # based on transaction risk signals, not a flat multiplier
+        amount           = transaction_data.get('amount', 0)
+        is_new_card      = transaction_data.get('card_age_days', 365) < 30
+        cvv_failed       = transaction_data.get('cvv_verification', True) is False
+        is_international = transaction_data.get('is_international', False)
+        burst_detected   = transaction_data.get('burst_detected', False)
+
+        # Context risk modifier (0.0 – 0.4)
+        context_modifier = 0.0
+        if amount > 100000:      context_modifier += 0.15
+        if is_new_card:          context_modifier += 0.10
+        if cvv_failed:           context_modifier += 0.10
+        if is_international:     context_modifier += 0.05
+        if burst_detected:       context_modifier += 0.10
+        context_modifier = min(0.4, context_modifier)
+
+        # Network Intelligence
         if hasattr(self, 'network_intelligence') and self.network_intelligence.is_loaded:
             raw_result = self.network_intelligence.predict_fraud(transaction_data)
-            raw_prob = raw_result.get('fraud_probability', 0.5)
-            
-            # Travel-specific calibration (more aggressive)
-            travel_calibrated = min(0.95, raw_prob * 8.0 + 0.2)
-            
+            raw_prob   = raw_result.get('fraud_probability', 0.5)
+
+            # ✅ FIX: Context-aware calibration (not flat ×8.0)
+            # Low raw_prob + high context risk → moderate score
+            # High raw_prob + high context risk → very high score
+            travel_calibrated = min(0.95, (raw_prob * 4.0) + context_modifier)
+
             results['network_intelligence'] = {
                 'fraud_probability': travel_calibrated,
-                'risk_level': self.categorize_risk(travel_calibrated),
-                'raw_probability': raw_prob
+                'risk_level':        self.categorize_risk(travel_calibrated),
+                'raw_probability':   raw_prob
             }
-            
+
             print(f"🧠 Network Intelligence:")
-            print(f"   Travel-Calibrated Score: {travel_calibrated:.4f}")
+            print(f"   Raw: {raw_prob:.4f} | Context Modifier: +{context_modifier:.2f} "
+                  f"| Calibrated: {travel_calibrated:.4f}")
             print(f"   Risk Level: {results['network_intelligence']['risk_level']}")
-        
-        # Behavioral Analysis (with travel patterns)
+
+        # Behavioral Analysis
         if hasattr(self, 'behavioral_predictor'):
-            raw_result = self.behavioral_predictor.predict_behavioral_risk(transaction_data)
-            raw_score = raw_result.get('behavioral_risk_score', 0.5)
-            
-            # Travel behavioral calibration
-            travel_behavioral = min(0.95, raw_score * 10.0 + 0.15)
-            
+            raw_result  = self.behavioral_predictor.predict_behavioral_risk(transaction_data)
+            raw_score   = raw_result.get('behavioral_risk_score', 0.5)
+
+            # ✅ FIX: More proportional calibration
+            travel_behavioral = min(0.95, (raw_score * 6.0) + (context_modifier * 0.5))
+
             results['behavioral'] = {
                 'behavioral_risk_score': travel_behavioral,
-                'risk_level': self.categorize_risk(travel_behavioral),
-                'key_factors': raw_result.get('key_factors', ['unknown'])
+                'risk_level':            self.categorize_risk(travel_behavioral),
+                'key_factors':           raw_result.get('key_factors', ['unknown'])
             }
-            
+
             print(f"\n🎭 Behavioral Analysis:")
-            print(f"   Travel-Calibrated Score: {travel_behavioral:.4f}")
+            print(f"   Raw: {raw_score:.4f} | Calibrated: {travel_behavioral:.4f}")
             print(f"   Key Factors: {', '.join(results['behavioral']['key_factors'])}")
-        
-        # Financial Risk (with travel amounts)
+
+        # Financial Risk
         if hasattr(self, 'financial_predictor'):
-            raw_result = self.financial_predictor.predict_financial_risk(transaction_data)
-            raw_score = raw_result.get('financial_risk_score', 0.5)
-            
-            # Travel financial calibration
-            travel_financial = min(0.95, raw_score * 7.0 + 0.1)
-            
+            raw_result    = self.financial_predictor.predict_financial_risk(transaction_data)
+            raw_score     = raw_result.get('financial_risk_score', 0.5)
+
+            # ✅ FIX: Proportional financial calibration
+            travel_financial = min(0.95, (raw_score * 5.0) + (context_modifier * 0.3))
+
             results['financial'] = {
                 'financial_risk_score': travel_financial,
-                'risk_level': self.categorize_risk(travel_financial),
-                'risk_factors': raw_result.get('risk_factors', ['unknown'])
+                'risk_level':           self.categorize_risk(travel_financial),
+                'risk_factors':         raw_result.get('risk_factors', ['unknown'])
             }
-            
+
             print(f"\n💰 Financial Risk:")
-            print(f"   Travel-Calibrated Score: {travel_financial:.4f}")
+            print(f"   Raw: {raw_score:.4f} | Calibrated: {travel_financial:.4f}")
             print(f"   Risk Factors: {', '.join(results['financial']['risk_factors'])}")
-        
+
         return results
     
     def run_travel_fraud_analysis(self, transaction_data, agency_data):
@@ -696,83 +851,115 @@ class TravelAgencyFraudDetectionSystem:
             'monitoring_window_hours': 6
         }
     
-    def calculate_travel_fraud_risk(self, base_analysis, travel_analysis, realtime_analysis, security_analysis, transaction_data):
-        """Calculate final travel fraud risk assessment"""
-        
-        # Weighted scoring for travel platform (Now includes App Security!)
+    def calculate_travel_fraud_risk(self, base_analysis, travel_analysis,
+                                    realtime_analysis, security_analysis,
+                                    transaction_data):
+        """Calculate final travel fraud risk — FIXED weights and thresholds"""
+
         weights = {
-            'network_intelligence': 0.15,    
-            'behavioral': 0.15,             
-            'financial': 0.10,              
-            'travel_specific': 0.25,        
-            'realtime_monitoring': 0.15,
-            'app_security': 0.20            # 20% weight for VPN/Bot detection
+            'network_intelligence': 0.20,
+            'behavioral':           0.15,
+            'financial':            0.15,
+            'travel_specific':      0.25,
+            'realtime_monitoring':  0.10,
+            'app_security':         0.15
         }
-        
-        # Extract scores
-        network_score = base_analysis.get('network_intelligence', {}).get('fraud_probability', 0.5)
-        behavioral_score = base_analysis.get('behavioral', {}).get('behavioral_risk_score', 0.5)
+
+        network_score   = base_analysis.get('network_intelligence', {}).get('fraud_probability', 0.5)
+        behavioral_score= base_analysis.get('behavioral', {}).get('behavioral_risk_score', 0.5)
         financial_score = base_analysis.get('financial', {}).get('financial_risk_score', 0.5)
-        travel_score = travel_analysis.get('travel_risk_score', 0.5)
-        realtime_score = realtime_analysis.get('realtime_risk_score', 0.0)
-        security_score = security_analysis.get('network_threat_score', 0.0)
-        
-        # Calculate weighted risk
+        travel_score    = travel_analysis.get('travel_risk_score', 0.5)
+        realtime_score  = realtime_analysis.get('realtime_risk_score', 0.0)
+        security_score  = security_analysis.get('network_threat_score', 0.0)
+
         overall_risk = (
-            network_score * weights['network_intelligence'] +
+            network_score    * weights['network_intelligence'] +
             behavioral_score * weights['behavioral'] +
-            financial_score * weights['financial'] +
-            travel_score * weights['travel_specific'] +
-            realtime_score * weights['realtime_monitoring'] +
-            security_score * weights['app_security']
+            financial_score  * weights['financial'] +
+            travel_score     * weights['travel_specific'] +
+            realtime_score   * weights['realtime_monitoring'] +
+            security_score   * weights['app_security']
         )
-        
-        # Travel-specific decision thresholds (MORE AGGRESSIVE)
+
         amount = transaction_data.get('amount', 0)
-        
-        if overall_risk >= 0.55 or amount > 200000:  # Very aggressive for high amounts
+
+        # ✅ FIX: Hard override rules — certain combinations = always BLOCK
+        hard_block = (
+            (security_score >= 0.5 and overall_risk >= 0.35) or   # VPN + moderate risk
+            (amount > 100000 and overall_risk >= 0.40) or          # High amount + risk
+            (overall_risk >= 0.55)                                  # Pure risk score
+        )
+
+        hard_review = (
+            (amount > 50000 and overall_risk >= 0.25) or
+            (overall_risk >= 0.35)
+        )
+
+        if hard_block:
             recommendation = "⛔ BLOCK TRANSACTION IMMEDIATELY"
-            risk_category = "FRAUD_DETECTED"
-            confidence = 0.98
-            action_code = "BLOCK"
-        elif overall_risk >= 0.35 or amount > 100000:  # Aggressive for large amounts
+            risk_category  = "FRAUD_DETECTED"
+            confidence     = 0.98
+            action_code    = "BLOCK"
+        elif hard_review:
             recommendation = "⚠️ MANUAL REVIEW REQUIRED"
-            risk_category = "HIGH_RISK"
-            confidence = 0.95
-            action_code = "MANUAL_REVIEW"
+            risk_category  = "HIGH_RISK"
+            confidence     = 0.95
+            action_code    = "MANUAL_REVIEW"
         elif overall_risk >= 0.20:
             recommendation = "👀 ENHANCED MONITORING"
-            risk_category = "MEDIUM_RISK"
-            confidence = 0.90
-            action_code = "MONITOR"
+            risk_category  = "MEDIUM_RISK"
+            confidence     = 0.90
+            action_code    = "MONITOR"
         else:
             recommendation = "✅ APPROVE TRANSACTION"
-            risk_category = "LOW_RISK"
-            confidence = 0.85
-            action_code = "APPROVE"
-        
+            risk_category  = "LOW_RISK"
+            confidence     = 0.85
+            action_code    = "APPROVE"
+
         print(f"\n🎯 FINAL TRAVEL FRAUD ASSESSMENT:")
-        print(f"   Overall Risk Score: {overall_risk:.4f}")
-        print(f"   Recommendation: {recommendation}")
-        print(f"   Risk Category: {risk_category}")
-        print(f"   Confidence: {confidence:.3f}")
-        print(f"   Action Code: {action_code}")
-        
-        # Generate alerts if needed
+        print(f"   Weighted Score Breakdown:")
+        print(f"     Network Intel : {network_score:.4f} × {weights['network_intelligence']} "
+              f"= {network_score * weights['network_intelligence']:.4f}")
+        print(f"     Behavioral    : {behavioral_score:.4f} × {weights['behavioral']} "
+              f"= {behavioral_score * weights['behavioral']:.4f}")
+        print(f"     Financial     : {financial_score:.4f} × {weights['financial']} "
+              f"= {financial_score * weights['financial']:.4f}")
+        print(f"     Travel Logic  : {travel_score:.4f} × {weights['travel_specific']} "
+              f"= {travel_score * weights['travel_specific']:.4f}")
+        print(f"     Realtime      : {realtime_score:.4f} × {weights['realtime_monitoring']} "
+              f"= {realtime_score * weights['realtime_monitoring']:.4f}")
+        print(f"     App Security  : {security_score:.4f} × {weights['app_security']} "
+              f"= {security_score * weights['app_security']:.4f}")
+        print(f"   ─────────────────────────────────────")
+        print(f"   Overall Risk Score : {overall_risk:.4f}")
+        print(f"   Hard Block Trigger : {hard_block}")
+        print(f"   Recommendation     : {recommendation}")
+        print(f"   Risk Category      : {risk_category}")
+        print(f"   Confidence         : {confidence:.3f}")
+        print(f"   Action Code        : {action_code}")
+
         if action_code in ["BLOCK", "MANUAL_REVIEW"]:
             self.generate_fraud_alert(transaction_data, overall_risk, recommendation)
-        
+
         return {
             'overall_risk_score': overall_risk,
-            'recommendation': recommendation,
-            'risk_category': risk_category,
-            'confidence': confidence,
-            'action_code': action_code,
-            'base_analysis': base_analysis,
-            'travel_analysis': travel_analysis,
-            'realtime_analysis': realtime_analysis,
-            'security_analysis': security_analysis,
-            'weights_used': weights,
+            'recommendation':     recommendation,
+            'risk_category':      risk_category,
+            'confidence':         confidence,
+            'action_code':        action_code,
+            'score_breakdown':    {
+                'network_intel': network_score,
+                'behavioral':    behavioral_score,
+                'financial':     financial_score,
+                'travel':        travel_score,
+                'realtime':      realtime_score,
+                'security':      security_score
+            },
+            'base_analysis':      base_analysis,
+            'travel_analysis':    travel_analysis,
+            'realtime_analysis':  realtime_analysis,
+            'security_analysis':  security_analysis,
+            'weights_used':       weights,
             'assessment_timestamp': datetime.now().isoformat()
         }
     

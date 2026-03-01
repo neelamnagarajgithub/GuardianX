@@ -33,7 +33,7 @@ class DeploymentFraudDetector:
         
     def load_model(self):
         """Load and validate the model system"""
-        print("🚀 Loading DEPLOYMENT-READY Fraud Detection System...")
+        print(" Loading DEPLOYMENT-READY Fraud Detection System...")
         
         try:
             model_path = self.model_dir / "advanced_ensemble_fixed.pkl"
@@ -48,7 +48,7 @@ class DeploymentFraudDetector:
             
             self.is_loaded = True
             
-            print(f"✅ Model loaded: {self.lgb_model.num_trees()} trees, {len(self.feature_columns)} features")
+            print(f" Model loaded: {self.lgb_model.num_trees()} trees, {len(self.feature_columns)} features")
             
             # Validate system with known patterns
             self.validate_system()
@@ -73,7 +73,7 @@ class DeploymentFraudDetector:
         
         for pattern, score in reference_scores.items():
             risk = self._assess_risk_level(score)
-            print(f"   📊 {pattern}: {score:.4f} → {risk}")
+            print(f"   {pattern}: {score:.4f} → {risk}")
         
         print(f"✅ System validation completed")
         return reference_scores
@@ -358,46 +358,46 @@ def demo_deployment_system():
     
     for i, test in enumerate(test_transactions):
         print(f"\n{'='*80}")
-        print(f"🎯 Scenario {i+1}: {test['name']}")
-        print(f"💰 Amount: ${test['transaction']['amount']:,.2f}")
-        print(f"📝 Type: {test['transaction']['transaction_type']}")
-        print(f"⏰ Time: {test['transaction']['timestamp']}")
+        print(f" Scenario {i+1}: {test['name']}")
+        print(f" Amount: ${test['transaction']['amount']:,.2f}")
+        print(f" Type: {test['transaction']['transaction_type']}")
+        print(f" Time: {test['transaction']['timestamp']}")
         
         result = detector.predict_fraud(test['transaction'])
         
         if result.get('processing_status') == 'SUCCESS':
-            print(f"\n🎯 DEPLOYMENT ANALYSIS:")
-            print(f"   🎲 Fraud Probability: {result['fraud_probability']:.4f}")
-            print(f"   🚦 Risk Level: {result['risk_level']}")
-            print(f"   🎬 Action: {result['recommended_action']}")
-            print(f"   💯 Confidence: {result['confidence']}")
+            print(f"\n DEPLOYMENT ANALYSIS:")
+            print(f"    Fraud Probability: {result['fraud_probability']:.4f}")
+            print(f"    Risk Level: {result['risk_level']}")
+            print(f"    Action: {result['recommended_action']}")
+            print(f"    Confidence: {result['confidence']}")
             
             # Business decision explanation
             if result['recommended_action'] == 'BLOCK':
-                print(f"   🚨 BLOCK TRANSACTION - Send to fraud team immediately")
+                print(f"    BLOCK TRANSACTION - Send to fraud team immediately")
             elif result['recommended_action'] == 'REVIEW':
-                print(f"   ⚠️  MANUAL REVIEW - Analyst verification required")
+                print(f"    MANUAL REVIEW - Analyst verification required")
             elif result['recommended_action'] == 'MONITOR':
-                print(f"   🔍 APPROVE WITH MONITORING - Flag for pattern analysis")
+                print(f"   APPROVE WITH MONITORING - Flag for pattern analysis")
             else:
-                print(f"   ✅ APPROVE - Process transaction normally")
+                print(f"    APPROVE - Process transaction normally")
                 
         else:
-            print(f"❌ PROCESSING ERROR: {result.get('error')}")
+            print(f" PROCESSING ERROR: {result.get('error')}")
     
-    print(f"\n🎊 DEPLOYMENT SYSTEM READY!")
-    print(f"📊 Calibrated Thresholds:")
-    print(f"   🚨 BLOCK (HIGH): ≥ {detector.thresholds['block']}")
-    print(f"   ⚠️  REVIEW (MEDIUM-HIGH): ≥ {detector.thresholds['review']}")
-    print(f"   🔍 MONITOR (MEDIUM): ≥ {detector.thresholds['monitor']}")
-    print(f"   ✅ APPROVE (LOW): < {detector.thresholds['monitor']}")
+    print(f"\n DEPLOYMENT SYSTEM READY!")
+    print(f" Calibrated Thresholds:")
+    print(f"   BLOCK (HIGH): ≥ {detector.thresholds['block']}")
+    print(f"   REVIEW (MEDIUM-HIGH): ≥ {detector.thresholds['review']}")
+    print(f"   MONITOR (MEDIUM): ≥ {detector.thresholds['monitor']}")
+    print(f"   APPROVE (LOW): < {detector.thresholds['monitor']}")
     
-    print(f"\n🚀 System Performance Characteristics:")
-    print(f"   📈 AUC Score: 0.8478 (from your testing)")
-    print(f"   🎯 Precision: 28.9% at optimal threshold")
-    print(f"   🔍 Fraud Detection Rate: 13.5%")
-    print(f"   ⚠️  False Positive Rate: 0.11% (very low!)")
-    print(f"\n💡 Your model is PRODUCTION-READY and optimized for low false positives!")
+    print(f"\n System Performance Characteristics:")
+    print(f"    AUC Score: 0.8478 (from your testing)")
+    print(f"    Precision: 28.9% at optimal threshold")
+    print(f"    Fraud Detection Rate: 13.5%")
+    print(f"     False Positive Rate: 0.11% (very low!)")
+    print(f"\n Your model is PRODUCTION-READY and optimized for low false positives!")
 
 if __name__ == "__main__":
     demo_deployment_system()
