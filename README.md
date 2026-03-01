@@ -237,7 +237,7 @@ All three datasets are normalised to a common schema for the Network Intelligenc
 
 ---
 
-## 4. Model 1 — Network Intelligence
+## 4. Model 1 — Financial Network Intelligence
 
 **File:** `advnetworkmodel.py`
 **Purpose:** Detect fraudulent financial transactions through transaction graph analysis and network centrality features.
