@@ -3,7 +3,7 @@
 
 - **Hackathon:** VoyageHack 2.0 | **Track:** B2B Travel Platform Fraud & Credit Risk
 - **Document Version:** 2.0 | **Last Updated:** March 1st, 2026 | **Status:** Production Ready 
--  Artifacts are Uploaded Seperately in additional Documents
+-  Artifacts are Uploaded Seperately in the Repo as Artifacts.zip - Unzip Before Setup
 ---
 
 ## Table of Contents
