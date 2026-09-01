@@ -1,4 +1,4 @@
-# Team Phoenix - GuardianX - — B2B Travel Platform Fraud Detection System
+# Team Phoenix - GuardianX — B2B Travel Platform Fraud Detection System
 ## Complete Technical Documentation
 
 - **Hackathon:** VoyageHack 2.0 | **Track:** B2B Travel Platform Fraud & Credit Risk
